@@ -18,28 +18,31 @@ jobs:
           node-version: 20
 
       - name: Install Dependencies
-        run: npm install -g wrangler
+        run: npm i -g wrangler
 
       - name: Sync Cloudflare Bindings
         env:
           CLOUDFLARE_API_TOKEN: ${{ secrets.CLOUDFLARE_API_TOKEN }}
         run: |
-          AID=$(curl -sX GET "https://api.cloudflare.com/client/v4/accounts" -H "Authorization: Bearer $CLOUDFLARE_API_TOKEN" -H "Content-Type:application/json" | jq -r '.result[0].id')
-          if [ -z "$AID" ] || [ "$AID" == "null" ]; then echo "::error::Failed to retrieve Cloudflare Account ID." >&2; exit 1; fi
+          set -euo pipefail
+          hdr=(-H "Authorization: Bearer $CLOUDFLARE_API_TOKEN" -H "Content-Type: application/json")
+          AID=$(curl -fsSL "${hdr[@]}" https://api.cloudflare.com/client/v4/accounts | jq -r '.result[0].id // empty')
+          [ -n "$AID" ] || { echo "::error::Failed to retrieve Cloudflare Account ID."; exit 1; }
+          touch wrangler.toml
 
-          wrangler d1 list --json --account-id $AID | jq -c '.[]' | while read -r db; do
-            id=$(jq -r .uuid <<< "$db"); name=$(jq -r .name <<< "$db")
-            if ! grep -q "$id" wrangler.toml; then
-              printf '\n[[d1_databases]]\nbinding = "%s"\ndatabase_name = "%s"\ndatabase_id = "%s"\n' "$(echo "$name"|tr '[:lower:]-' '[:upper:]_')" "$name" "$id" >> wrangler.toml
-            fi
-          done
+          curl -fsSL "${hdr[@]}" "https://api.cloudflare.com/client/v4/accounts/$AID/d1/database/list?per_page=1000" \
+          | jq -Mc '.result[]' \
+          | while read -r db; do
+              id=$(jq -r .uuid<<<"$db"); name=$(jq -r .name<<<"$db"); bind=$(tr '[:lower:]-' '[:upper:]_'<<<"$name")
+              grep -q "$id" wrangler.toml || printf '\n[[d1_databases]]\nbinding="%s"\ndatabase_name="%s"\ndatabase_id="%s"\n' "$bind" "$name" "$id" >> wrangler.toml
+            done
 
-          wrangler kv:namespace list --json --account-id $AID | jq -c '.[]' | while read -r kv; do
-            id=$(jq -r .id <<< "$kv"); title=$(jq -r .title <<< "$kv")
-            if ! grep -q "$id" wrangler.toml; then
-              printf '\n[[kv_namespaces]]\nbinding = "%s"\nid = "%s"\n' "$(echo "$title"|tr '[:lower:]-' '[:upper:]_')" "$id" >> wrangler.toml
-            fi
-          done
+          curl -fsSL "${hdr[@]}" "https://api.cloudflare.com/client/v4/accounts/$AID/storage/kv/namespaces?per_page=1000" \
+          | jq -Mc '.result[]' \
+          | while read -r kv; do
+              id=$(jq -r .id<<<"$kv"); title=$(jq -r .title<<<"$kv"); bind=$(tr '[:lower:]-' '[:upper:]_'<<<"$title")
+              grep -q "$id" wrangler.toml || printf '\n[[kv_namespaces]]\nbinding="%s"\nid="%s"\n' "$bind" "$id" >> wrangler.toml
+            done
 
       - name: Commit and Push Changes
         uses: stefanzweifel/git-auto-commit-action@v5
