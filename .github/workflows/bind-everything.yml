@@ -1,5 +1,6 @@
 on:
   push:
+    branches: ["**"]
   workflow_dispatch:
 
 permissions:
@@ -20,23 +21,29 @@ jobs:
       - name: Install Dependencies
         run: npm install -g wrangler
 
-      - name: Fetch Cloudflare Account ID & Sync Bindings
+      - name: Sync Cloudflare Bindings
         env:
           CLOUDFLARE_API_TOKEN: ${{ secrets.CLOUDFLARE_API_TOKEN }}
         run: |
           export CLOUDFLARE_ACCOUNT_ID=$(curl -sX GET "https://api.cloudflare.com/client/v4/accounts" -H "Authorization: Bearer $CLOUDFLARE_API_TOKEN" -H "Content-Type:application/json" | jq -r '.result[0].id')
+          
           wrangler d1 list --json | jq -c '.[]' | while read -r db; do
-            id=$(jq -r .uuid <<< "$db")
+            id=$(jq -r .uuid <<< "$db"); name=$(jq -r .name <<< "$db")
             if ! grep -q "$id" wrangler.toml; then
-              name=$(jq -r .name <<< "$db")
-              binding=$(echo "$name" | tr '[:lower:]-' '[:upper:]_')
-              printf '\n[[d1_databases]]\nbinding = "%s"\ndatabase_name = "%s"\ndatabase_id = "%s"\n' "$binding" "$name" "$id" >> wrangler.toml
+              printf '\n[[d1_databases]]\nbinding = "%s"\ndatabase_name = "%s"\ndatabase_id = "%s"\n' "$(echo "$name"|tr '[:lower:]-' '[:upper:]_')" "$name" "$id" >> wrangler.toml
+            fi
+          done
+
+          wrangler kv:namespace list --json | jq -c '.[]' | while read -r kv; do
+            id=$(jq -r .id <<< "$kv"); title=$(jq -r .title <<< "$kv")
+            if ! grep -q "$id" wrangler.toml; then
+              printf '\n[[kv_namespaces]]\nbinding = "%s"\nid = "%s"\n' "$(echo "$title"|tr '[:lower:]-' '[:upper:]_')" "$id" >> wrangler.toml
             fi
           done
 
       - name: Commit and Push Changes
         uses: stefanzweifel/git-auto-commit-action@v5
         with:
-          commit_message: "chore: Sync D1 database bindings"
+          commit_message: "chore: Sync Cloudflare D1 & KV bindings"
           file_pattern: wrangler.toml
 
